@@ -97,6 +97,10 @@ func generateFile(plugin *protogen.Plugin, file *protogen.File) (*protogen.Gener
 		processedPackages[*file.Proto.Package] = struct{}{}
 	}
 
+	for _, enum := range file.Enums {
+		generateEnum(g, enum)
+	}
+
 	for _, msg := range file.Messages {
 		generateMessage(g, msg)
 	}
@@ -191,6 +195,10 @@ func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
 	g.P("}")
 	g.P()
 
+	for _, enum := range msg.Enums {
+		generateEnum(g, enum)
+	}
+
 	for _, nested := range msg.Messages {
 		generateMessage(g, nested)
 	}
@@ -218,7 +226,7 @@ func goType(g *protogen.GeneratedFile, field *protogen.Field) string {
 	case protoreflect.BytesKind:
 		typ = "[]byte"
 	case protoreflect.EnumKind:
-		typ = "int32" // simpler
+		typ = g.QualifiedGoIdent(field.Enum.GoIdent)
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		typ = g.QualifiedGoIdent(field.Message.GoIdent)
 	}
@@ -481,4 +489,27 @@ func getUnpackMethod(kind protoreflect.Kind) string {
 		return "UnpackInt32s"
 	}
 	return ""
+}
+
+func generateEnum(g *protogen.GeneratedFile, enum *protogen.Enum) {
+	enumName := enum.GoIdent.GoName
+	if enum.Comments.Leading.String() != "" {
+		g.P(strings.TrimSpace(enum.Comments.Leading.String()))
+	}
+	g.P("type ", enumName, " = int32")
+	g.P()
+
+	g.P("const (")
+	for _, val := range enum.Values {
+		if val.Comments.Leading.String() != "" {
+			g.P("\t", strings.TrimSpace(val.Comments.Leading.String()))
+		}
+		trailing := ""
+		if val.Comments.Trailing.String() != "" {
+			trailing = " " + strings.TrimSpace(val.Comments.Trailing.String())
+		}
+		g.P("\t", val.GoIdent.GoName, " ", enumName, " = ", val.Desc.Number(), trailing)
+	}
+	g.P(")")
+	g.P()
 }
