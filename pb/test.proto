@@ -11,6 +11,11 @@ message Test {
   int32 age = 2;
   // NICKNAMES
   repeated string nicknames = 3;
+
+  // The test status.
+  TestEnum status = 4;
+  // The test statuses.
+  repeated TestEnum statuses = 5;
 }
 
 // A test enum.

@@ -378,6 +378,7 @@ func generateUnmarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
 			g.P("\t\t\tif err := s.UnmarshalProtobuf(data); err != nil {")
 			g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot unmarshal ", field.GoName, ": \" + err.Error())")
 			g.P("\t\t\t}")
+			return
 		} else {
 			method := getUnpackMethod(kind)
 			if method != "" {
@@ -386,9 +387,9 @@ func generateUnmarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
 				g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read ", field.GoName, " list data\")")
 				g.P("\t\t\t}")
 				g.P("\t\t\t", name, " = v")
+				return
 			}
 		}
-		return
 	}
 
 	if kind == protoreflect.MessageKind {
@@ -408,13 +409,25 @@ func generateUnmarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
 	g.P("\t\t\tif !ok {")
 	g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read ", field.GoName, "\")")
 	g.P("\t\t\t}")
-	switch kind {
-	case protoreflect.StringKind:
-		g.P("\t\t\t", name, " = ", stringsPkg.Ident("Clone"), "(v)")
-	case protoreflect.BytesKind:
-		g.P("\t\t\t", name, " = append(([]byte)(nil), v...)") // Clone bytes
-	default:
-		g.P("\t\t\t", name, " = v")
+
+	if isList {
+		switch kind {
+		case protoreflect.StringKind:
+			g.P("\t\t\t", name, " = append(", name, ", ", stringsPkg.Ident("Clone"), "(v))")
+		case protoreflect.BytesKind:
+			g.P("\t\t\t", name, " = append(", name, ", append(([]byte)(nil), v...))") // Clone bytes
+		default:
+			g.P("\t\t\t", name, " = append(", name, ", v)")
+		}
+	} else {
+		switch kind {
+		case protoreflect.StringKind:
+			g.P("\t\t\t", name, " = ", stringsPkg.Ident("Clone"), "(v)")
+		case protoreflect.BytesKind:
+			g.P("\t\t\t", name, " = append(([]byte)(nil), v...)") // Clone bytes
+		default:
+			g.P("\t\t\t", name, " = v")
+		}
 	}
 }
 
