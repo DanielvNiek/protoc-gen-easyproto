@@ -275,15 +275,16 @@ func generateMarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
 	}
 
 	method := getAppendMethod(kind)
-	if kind == protoreflect.StringKind || kind == protoreflect.BytesKind {
+	switch kind {
+	case protoreflect.StringKind, protoreflect.BytesKind:
 		g.P("\tif len(", name, ") > 0 {")
 		g.P("\t\tmm.", method, "(", num, ", ", name, ")")
 		g.P("\t}")
-	} else if kind == protoreflect.BoolKind {
+	case protoreflect.BoolKind:
 		g.P("\tif ", name, " {")
 		g.P("\t\tmm.", method, "(", num, ", ", name, ")")
 		g.P("\t}")
-	} else {
+	default:
 		g.P("\tif ", name, " != 0 {")
 		g.P("\t\tmm.", method, "(", num, ", ", name, ")")
 		g.P("\t}")
