@@ -12,3 +12,13 @@ message Test {
   // NICKNAMES
   repeated string nicknames = 3;
 }
+
+// A test enum.
+enum TestEnum {
+  // TEST_ENUM_UNSPECIFIED is the default value.
+  TEST_ENUM_UNSPECIFIED = 0;
+  // TEST_ENUM_VALUE_1 is the first value.
+  TEST_ENUM_VALUE_1 = 1;
+  // TEST_ENUM_VALUE_2 is the second value.
+  TEST_ENUM_VALUE_2 = 2;
+}

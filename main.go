@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/compiler/protogen"
@@ -111,9 +112,19 @@ func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
 	structName := msg.GoIdent.GoName
 
 	// Generate struct
+	if msg.Comments.Leading.String() != "" {
+		g.P(strings.TrimSpace(msg.Comments.Leading.String()))
+	}
 	g.P("type ", structName, " struct {")
 	for _, field := range msg.Fields {
-		g.P("\t", field.GoName, " ", goType(g, field))
+		if field.Comments.Leading.String() != "" {
+			g.P("\t", strings.TrimSpace(field.Comments.Leading.String()))
+		}
+		trailing := ""
+		if field.Comments.Trailing.String() != "" {
+			trailing = " " + strings.TrimSpace(field.Comments.Trailing.String())
+		}
+		g.P("\t", field.GoName, " ", goType(g, field), trailing)
 	}
 	g.P("}")
 	g.P()
