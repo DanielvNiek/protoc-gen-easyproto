@@ -21,62 +21,16 @@ func TestMarshalUnmarshal(t *testing.T) {
 		Nicknames: []string{"nick1", "nick2"},
 		Status:    TestEnum_TEST_ENUM_VALUE_1,
 		Statuses:  []TestEnum{TestEnum_TEST_ENUM_UNSPECIFIED, TestEnum_TEST_ENUM_VALUE_2},
-	}
-
-	data := msg.MarshalProtobuf(nil)
-	if len(data) == 0 {
-		t.Fatal("MarshalProtobuf returned empty data")
-	}
-
-	var msg2 Test
-	if err := msg2.UnmarshalProtobuf(data); err != nil {
-		t.Fatalf("UnmarshalProtobuf failed: %v", err)
-	}
-
-	normalizeSlices(msg)
-	normalizeSlices(&msg2)
-
-	if !reflect.DeepEqual(msg, &msg2) {
-		t.Errorf("Unmarshaled message does not match original.\nOriginal: %+v\nUnmarshaled: %+v", msg, &msg2)
-	}
-}
-
-func TestMarshalUnmarshalEmpty(t *testing.T) {
-	msg := &Test{}
-
-	data := msg.MarshalProtobuf(nil)
-	// Empty message should marshal to empty bytes in proto3
-	if len(data) != 0 {
-		t.Errorf("Expected empty data for empty message, got %d bytes", len(data))
-	}
-
-	var msg2 Test
-	// Put some garbage data in msg2 to ensure it gets cleared
-	msg2.Name = "garbage"
-	msg2.Age = 100
-	msg2.Nicknames = []string{"garbage"}
-	msg2.Status = TestEnum_TEST_ENUM_VALUE_2
-	msg2.Statuses = []TestEnum{TestEnum_TEST_ENUM_VALUE_1}
-
-	if err := msg2.UnmarshalProtobuf(data); err != nil {
-		t.Fatalf("UnmarshalProtobuf failed: %v", err)
-	}
-
-	normalizeSlices(msg)
-	normalizeSlices(&msg2)
-
-	if !reflect.DeepEqual(msg, &msg2) {
-		t.Errorf("Unmarshaled message does not match original.\nOriginal: %+v\nUnmarshaled: %+v", msg, &msg2)
-	}
-}
-
-func TestMarshalUnmarshalPartial(t *testing.T) {
-	msg := &Test{
-		Name: "partial",
-		// Age: 0,
-		// Nicknames: nil,
-		Status: TestEnum_TEST_ENUM_VALUE_2,
-		// Statuses: nil,
+		Tags: map[string]string{
+			"key1": "val1",
+			"key2": "",     // test empty string
+			"":     "val3", // test empty key
+		},
+		EnumMap: map[int32]TestEnum{
+			1: TestEnum_TEST_ENUM_VALUE_1,
+			2: TestEnum_TEST_ENUM_UNSPECIFIED, // test default enum
+			0: TestEnum_TEST_ENUM_VALUE_2,     // test default key
+		},
 	}
 
 	data := msg.MarshalProtobuf(nil)

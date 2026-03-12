@@ -16,6 +16,9 @@ message Test {
   TestEnum status = 4;
   // The test statuses.
   repeated TestEnum statuses = 5;
+
+  map<string, string> tags = 6;
+  map<int32, TestEnum> enum_map = 7;
 }
 
 // A test enum.

@@ -162,7 +162,11 @@ func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
 	// Default values
 	for _, field := range msg.Fields {
 		name := "m." + field.GoName
-		if field.Desc.IsList() {
+		if field.Desc.IsMap() {
+			g.P("\tfor k := range ", name, " {")
+			g.P("\t\tdelete(", name, ", k)")
+			g.P("\t}")
+		} else if field.Desc.IsList() {
 			g.P("\t", name, " = ", name, "[:0]")
 		} else if field.Desc.Kind() == protoreflect.MessageKind {
 			// Do nothing for message types, they stay nil
@@ -205,6 +209,12 @@ func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
 }
 
 func goType(g *protogen.GeneratedFile, field *protogen.Field) string {
+	if field.Desc.IsMap() {
+		keyType := goType(g, field.Message.Fields[0])
+		valType := goType(g, field.Message.Fields[1])
+		return "map[" + keyType + "]" + valType
+	}
+
 	var typ string
 	switch field.Desc.Kind() {
 	case protoreflect.BoolKind:
@@ -245,6 +255,50 @@ func generateMarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
 	name := "m." + field.GoName
 	kind := field.Desc.Kind()
 	isList := field.Desc.IsList()
+	isMap := field.Desc.IsMap()
+
+	if isMap {
+		g.P("\tfor k, v := range ", name, " {")
+		g.P("\t\tmsg := mm.AppendMessage(", num, ")")
+		keyField := field.Message.Fields[0]
+		valField := field.Message.Fields[1]
+
+		keyMethod := getAppendMethod(keyField.Desc.Kind())
+		if keyField.Desc.Kind() == protoreflect.StringKind || keyField.Desc.Kind() == protoreflect.BytesKind {
+			g.P("\t\tif len(k) > 0 {")
+			g.P("\t\t\tmsg.", keyMethod, "(1, k)")
+			g.P("\t\t}")
+		} else if keyField.Desc.Kind() == protoreflect.BoolKind {
+			g.P("\t\tif k {")
+			g.P("\t\t\tmsg.", keyMethod, "(1, k)")
+			g.P("\t\t}")
+		} else {
+			g.P("\t\tif k != 0 {")
+			g.P("\t\t\tmsg.", keyMethod, "(1, k)")
+			g.P("\t\t}")
+		}
+
+		valMethod := getAppendMethod(valField.Desc.Kind())
+		if valField.Desc.Kind() == protoreflect.MessageKind {
+			g.P("\t\tif v != nil {")
+			g.P("\t\t\tv.marshalProtobuf(msg.AppendMessage(2))")
+			g.P("\t\t}")
+		} else if valField.Desc.Kind() == protoreflect.StringKind || valField.Desc.Kind() == protoreflect.BytesKind {
+			g.P("\t\tif len(v) > 0 {")
+			g.P("\t\t\tmsg.", valMethod, "(2, v)")
+			g.P("\t\t}")
+		} else if valField.Desc.Kind() == protoreflect.BoolKind {
+			g.P("\t\tif v {")
+			g.P("\t\t\tmsg.", valMethod, "(2, v)")
+			g.P("\t\t}")
+		} else {
+			g.P("\t\tif v != 0 {")
+			g.P("\t\t\tmsg.", valMethod, "(2, v)")
+			g.P("\t\t}")
+		}
+		g.P("\t}")
+		return
+	}
 
 	if isList {
 		if kind == protoreflect.MessageKind {
@@ -367,6 +421,83 @@ func generateUnmarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
 	name := "m." + field.GoName
 	kind := field.Desc.Kind()
 	isList := field.Desc.IsList()
+	isMap := field.Desc.IsMap()
+
+	if isMap {
+		g.P("\t\t\tdata, ok := fc.MessageData()")
+		g.P("\t\t\tif !ok {")
+		g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read ", field.GoName, " data\")")
+		g.P("\t\t\t}")
+
+		keyField := field.Message.Fields[0]
+		valField := field.Message.Fields[1]
+
+		g.P("\t\t\tvar entryFc ", easyprotoPkg.Ident("FieldContext"))
+		g.P("\t\t\tvar k ", goType(g, keyField))
+		g.P("\t\t\tvar v ", goType(g, valField))
+
+		g.P("\t\t\tfor len(data) > 0 {")
+		g.P("\t\t\t\tvar err error")
+		g.P("\t\t\t\tdata, err = entryFc.NextField(data)")
+		g.P("\t\t\t\tif err != nil {")
+		g.P("\t\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read map entry in ", field.GoName, "\")")
+		g.P("\t\t\t\t}")
+		g.P("\t\t\t\tswitch entryFc.FieldNum {")
+		g.P("\t\t\t\tcase 1:")
+
+		keyMethod := getReadMethod(keyField.Desc.Kind())
+		g.P("\t\t\t\t\tval, ok := entryFc.", keyMethod, "()")
+		g.P("\t\t\t\t\tif !ok {")
+		g.P("\t\t\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read map key in ", field.GoName, "\")")
+		g.P("\t\t\t\t\t}")
+		if keyField.Desc.Kind() == protoreflect.StringKind {
+			g.P("\t\t\t\t\tk = ", stringsPkg.Ident("Clone"), "(val)")
+		} else if keyField.Desc.Kind() == protoreflect.BytesKind {
+			g.P("\t\t\t\t\tk = append(([]byte)(nil), val...)")
+		} else {
+			g.P("\t\t\t\t\tk = val")
+		}
+
+		g.P("\t\t\t\tcase 2:")
+
+		if valField.Desc.Kind() == protoreflect.MessageKind {
+			g.P("\t\t\t\t\tvData, ok := entryFc.MessageData()")
+			g.P("\t\t\t\t\tif !ok {")
+			g.P("\t\t\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read map value in ", field.GoName, "\")")
+			g.P("\t\t\t\t\t}")
+			g.P("\t\t\t\t\tv = &", g.QualifiedGoIdent(valField.Message.GoIdent), "{}")
+			g.P("\t\t\t\t\tif err := v.UnmarshalProtobuf(vData); err != nil {")
+			g.P("\t\t\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot unmarshal map value in ", field.GoName, ": \" + err.Error())")
+			g.P("\t\t\t\t\t}")
+		} else {
+			valMethod := getReadMethod(valField.Desc.Kind())
+			g.P("\t\t\t\t\tval, ok := entryFc.", valMethod, "()")
+			g.P("\t\t\t\t\tif !ok {")
+			g.P("\t\t\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read map value in ", field.GoName, "\")")
+			g.P("\t\t\t\t\t}")
+			if valField.Desc.Kind() == protoreflect.StringKind {
+				g.P("\t\t\t\t\tv = ", stringsPkg.Ident("Clone"), "(val)")
+			} else if valField.Desc.Kind() == protoreflect.BytesKind {
+				g.P("\t\t\t\t\tv = append(([]byte)(nil), val...)")
+			} else {
+				g.P("\t\t\t\t\tv = val")
+			}
+		}
+
+		g.P("\t\t\t\t}")
+		g.P("\t\t\t}")
+
+		g.P("\t\t\tif ", name, " == nil {")
+		g.P("\t\t\t\t", name, " = make(", goType(g, field), ")")
+		g.P("\t\t\t}")
+		if valField.Desc.Kind() == protoreflect.MessageKind {
+			g.P("\t\t\tif v == nil {")
+			g.P("\t\t\t\tv = &", g.QualifiedGoIdent(valField.Message.GoIdent), "{}")
+			g.P("\t\t\t}")
+		}
+		g.P("\t\t\t", name, "[k] = v")
+		return
+	}
 
 	if isList {
 		if kind == protoreflect.MessageKind {
