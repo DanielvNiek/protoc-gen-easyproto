@@ -2,7 +2,13 @@ syntax = "proto3";
 package pb;
 option go_package = "easyproto/pb";
 
+// A test message.
 message Test {
+  // The test name.
   string name = 1;
+  // The test age.
+  // Between 0 and 100, inclusive.
   int32 age = 2;
+  // NICKNAMES
+  repeated string nicknames = 3;
 }

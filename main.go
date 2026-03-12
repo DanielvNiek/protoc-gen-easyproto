@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/pluginpb"
 )
 
@@ -33,7 +34,7 @@ func main() {
 	var flags flag.FlagSet
 
 	// Get the flags
-	showVersion := flag.Bool("version", false, "Print the version of protoc-gen-go-jsonschema")
+	showVersion := flag.Bool("version", false, "Print the version of protoc-gen-easyproto")
 	flag.Parse()
 
 	if *showVersion {
@@ -66,6 +67,13 @@ func Generate(plugin *protogen.Plugin, version string) error {
 	return nil
 }
 
+var (
+	processedPackages = map[string]struct{}{}
+	easyprotoPkg      = protogen.GoImportPath("github.com/VictoriaMetrics/easyproto")
+	errorsPkg         = protogen.GoImportPath("errors")
+	stringsPkg        = protogen.GoImportPath("strings")
+)
+
 func generateFile(plugin *protogen.Plugin, file *protogen.File) (*protogen.GeneratedFile, error) {
 	filename := file.GeneratedFilenamePrefix + ".pb.go"
 	g := plugin.NewGeneratedFile(filename, file.GoImportPath)
@@ -81,6 +89,385 @@ func generateFile(plugin *protogen.Plugin, file *protogen.File) (*protogen.Gener
 		g.P("// ")
 		g.P("// Generated on: ", time.Now().UTC().Format("2006-01-02 15:04:05"), " UTC")
 		g.P("package ", file.GoPackageName)
+		g.P()
 	}
+	if _, ok := processedPackages[*file.Proto.Package]; !ok {
+		g.P("var MP ", easyprotoPkg.Ident("MarshalerPool"))
+		processedPackages[*file.Proto.Package] = struct{}{}
+	}
+
+	for _, msg := range file.Messages {
+		generateMessage(g, msg)
+	}
+
 	return g, nil
+}
+
+func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
+	if msg.Desc.IsMapEntry() {
+		return
+	}
+
+	structName := msg.GoIdent.GoName
+
+	// Generate struct
+	g.P("type ", structName, " struct {")
+	for _, field := range msg.Fields {
+		g.P("\t", field.GoName, " ", goType(g, field))
+	}
+	g.P("}")
+	g.P()
+
+	easyprotoPkg := protogen.GoImportPath("github.com/VictoriaMetrics/easyproto")
+
+	// Generate MarshalProtobuf
+	g.P("// MarshalProtobuf marshals m into protobuf message, appends this message to dst and returns the result.")
+	g.P("//")
+	g.P("// This function doesn't allocate memory on repeated calls.")
+	g.P("func (m *", structName, ") MarshalProtobuf(dst []byte) []byte {")
+	g.P("\tmp := MP.Get()")
+	g.P("\tm.marshalProtobuf(mp.MessageMarshaler())")
+	g.P("\tdst = mp.Marshal(dst)")
+	g.P("\tMP.Put(mp)")
+	g.P("\treturn dst")
+	g.P("}")
+	g.P()
+
+	g.P("func (m *", structName, ") marshalProtobuf(mm *", easyprotoPkg.Ident("MessageMarshaler"), ") {")
+	for _, field := range msg.Fields {
+		generateMarshalField(g, field)
+	}
+	g.P("}")
+	g.P()
+
+	// Generate UnmarshalProtobuf
+	g.P("// UnmarshalProtobuf unmarshals m from protobuf message at src.")
+	g.P("func (m *", structName, ") UnmarshalProtobuf(src []byte) (err error) {")
+
+	// Default values
+	for _, field := range msg.Fields {
+		name := "m." + field.GoName
+		if field.Desc.IsList() {
+			g.P("\t", name, " = ", name, "[:0]")
+		} else if field.Desc.Kind() == protoreflect.MessageKind {
+			// Do nothing for message types, they stay nil
+		} else if field.Desc.Kind() == protoreflect.StringKind {
+			g.P("\t", name, " = \"\"")
+		} else if field.Desc.Kind() == protoreflect.BytesKind {
+			g.P("\t", name, " = nil")
+		} else if field.Desc.Kind() == protoreflect.BoolKind {
+			g.P("\t", name, " = false")
+		} else {
+			g.P("\t", name, " = 0")
+		}
+	}
+	g.P()
+
+	g.P("\tvar fc ", easyprotoPkg.Ident("FieldContext"))
+	g.P("\tfor len(src) > 0 {")
+	g.P("\t\tsrc, err = fc.NextField(src)")
+	g.P("\t\tif err != nil {")
+	g.P("\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read next field in ", structName, " message\")")
+	g.P("\t\t}")
+	g.P("\t\tswitch fc.FieldNum {")
+	for _, field := range msg.Fields {
+		g.P("\t\tcase ", field.Desc.Number(), ":")
+		generateUnmarshalField(g, field)
+	}
+	g.P("\t\t}")
+	g.P("\t}")
+	g.P("\treturn nil")
+	g.P("}")
+	g.P()
+
+	for _, nested := range msg.Messages {
+		generateMessage(g, nested)
+	}
+}
+
+func goType(g *protogen.GeneratedFile, field *protogen.Field) string {
+	var typ string
+	switch field.Desc.Kind() {
+	case protoreflect.BoolKind:
+		typ = "bool"
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		typ = "int32"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		typ = "int64"
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		typ = "uint32"
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		typ = "uint64"
+	case protoreflect.FloatKind:
+		typ = "float32"
+	case protoreflect.DoubleKind:
+		typ = "float64"
+	case protoreflect.StringKind:
+		typ = "string"
+	case protoreflect.BytesKind:
+		typ = "[]byte"
+	case protoreflect.EnumKind:
+		typ = "int32" // simpler
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		typ = g.QualifiedGoIdent(field.Message.GoIdent)
+	}
+
+	if field.Desc.IsList() {
+		return "[]" + typ
+	}
+	if field.Desc.Kind() == protoreflect.MessageKind {
+		return "*" + typ
+	}
+	return typ
+}
+
+func generateMarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
+	num := field.Desc.Number()
+	name := "m." + field.GoName
+	kind := field.Desc.Kind()
+	isList := field.Desc.IsList()
+
+	if isList {
+		if kind == protoreflect.MessageKind {
+			g.P("\tfor _, s := range ", name, " {")
+			g.P("\t\ts.marshalProtobuf(mm.AppendMessage(", num, "))")
+			g.P("\t}")
+		} else {
+			method := getAppendMethodList(kind)
+			if method != "" {
+				g.P("\tif len(", name, ") > 0 {")
+				g.P("\t\tmm.", method, "(", num, ", ", name, ")")
+				g.P("\t}")
+			} else {
+				method = getAppendMethod(kind)
+				g.P("\tfor _, v := range ", name, " {")
+				g.P("\t\tmm.", method, "(", num, ", v)")
+				g.P("\t}")
+			}
+		}
+		return
+	}
+
+	if kind == protoreflect.MessageKind {
+		g.P("\tif ", name, " != nil {")
+		g.P("\t\t", name, ".marshalProtobuf(mm.AppendMessage(", num, "))")
+		g.P("\t}")
+		return
+	}
+
+	method := getAppendMethod(kind)
+	if kind == protoreflect.StringKind || kind == protoreflect.BytesKind {
+		g.P("\tif len(", name, ") > 0 {")
+		g.P("\t\tmm.", method, "(", num, ", ", name, ")")
+		g.P("\t}")
+	} else if kind == protoreflect.BoolKind {
+		g.P("\tif ", name, " {")
+		g.P("\t\tmm.", method, "(", num, ", ", name, ")")
+		g.P("\t}")
+	} else {
+		g.P("\tif ", name, " != 0 {")
+		g.P("\t\tmm.", method, "(", num, ", ", name, ")")
+		g.P("\t}")
+	}
+}
+
+func getAppendMethod(kind protoreflect.Kind) string {
+	switch kind {
+	case protoreflect.BoolKind:
+		return "AppendBool"
+	case protoreflect.Int32Kind:
+		return "AppendInt32"
+	case protoreflect.Int64Kind:
+		return "AppendInt64"
+	case protoreflect.Uint32Kind:
+		return "AppendUint32"
+	case protoreflect.Uint64Kind:
+		return "AppendUint64"
+	case protoreflect.Sint32Kind:
+		return "AppendSint32"
+	case protoreflect.Sint64Kind:
+		return "AppendSint64"
+	case protoreflect.Fixed32Kind:
+		return "AppendFixed32"
+	case protoreflect.Fixed64Kind:
+		return "AppendFixed64"
+	case protoreflect.Sfixed32Kind:
+		return "AppendSfixed32"
+	case protoreflect.Sfixed64Kind:
+		return "AppendSfixed64"
+	case protoreflect.FloatKind:
+		return "AppendFloat"
+	case protoreflect.DoubleKind:
+		return "AppendDouble"
+	case protoreflect.StringKind:
+		return "AppendString"
+	case protoreflect.BytesKind:
+		return "AppendBytes"
+	case protoreflect.EnumKind:
+		return "AppendInt32"
+	}
+	return ""
+}
+
+func getAppendMethodList(kind protoreflect.Kind) string {
+	switch kind {
+	case protoreflect.BoolKind:
+		return "AppendBools"
+	case protoreflect.Int32Kind:
+		return "AppendInt32s"
+	case protoreflect.Int64Kind:
+		return "AppendInt64s"
+	case protoreflect.Uint32Kind:
+		return "AppendUint32s"
+	case protoreflect.Uint64Kind:
+		return "AppendUint64s"
+	case protoreflect.Sint32Kind:
+		return "AppendSint32s"
+	case protoreflect.Sint64Kind:
+		return "AppendSint64s"
+	case protoreflect.Fixed32Kind:
+		return "AppendFixed32s"
+	case protoreflect.Fixed64Kind:
+		return "AppendFixed64s"
+	case protoreflect.Sfixed32Kind:
+		return "AppendSfixed32s"
+	case protoreflect.Sfixed64Kind:
+		return "AppendSfixed64s"
+	case protoreflect.FloatKind:
+		return "AppendFloats"
+	case protoreflect.DoubleKind:
+		return "AppendDoubles"
+	case protoreflect.EnumKind:
+		return "AppendInt32s"
+	}
+	return ""
+}
+
+func generateUnmarshalField(g *protogen.GeneratedFile, field *protogen.Field) {
+	name := "m." + field.GoName
+	kind := field.Desc.Kind()
+	isList := field.Desc.IsList()
+
+	if isList {
+		if kind == protoreflect.MessageKind {
+			g.P("\t\t\tdata, ok := fc.MessageData()")
+			g.P("\t\t\tif !ok {")
+			g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read ", field.GoName, " data\")")
+			g.P("\t\t\t}")
+			g.P("\t\t\t", name, " = append(", name, ", ", g.QualifiedGoIdent(field.Message.GoIdent), "{})")
+			g.P("\t\t\ts := &", name, "[len(", name, ")-1]")
+			g.P("\t\t\tif err := s.UnmarshalProtobuf(data); err != nil {")
+			g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot unmarshal ", field.GoName, ": \" + err.Error())")
+			g.P("\t\t\t}")
+		} else {
+			method := getUnpackMethod(kind)
+			if method != "" {
+				g.P("\t\t\tv, ok := fc.", method, "(", name, ")")
+				g.P("\t\t\tif !ok {")
+				g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read ", field.GoName, " list data\")")
+				g.P("\t\t\t}")
+				g.P("\t\t\t", name, " = v")
+			}
+		}
+		return
+	}
+
+	if kind == protoreflect.MessageKind {
+		g.P("\t\t\tdata, ok := fc.MessageData()")
+		g.P("\t\t\tif !ok {")
+		g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read ", field.GoName, " data\")")
+		g.P("\t\t\t}")
+		g.P("\t\t\t", name, " = &", g.QualifiedGoIdent(field.Message.GoIdent), "{}")
+		g.P("\t\t\tif err := ", name, ".UnmarshalProtobuf(data); err != nil {")
+		g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot unmarshal ", field.GoName, ": \" + err.Error())")
+		g.P("\t\t\t}")
+		return
+	}
+
+	method := getReadMethod(kind)
+	g.P("\t\t\tv, ok := fc.", method, "()")
+	g.P("\t\t\tif !ok {")
+	g.P("\t\t\t\treturn ", errorsPkg.Ident("New"), "(\"cannot read ", field.GoName, "\")")
+	g.P("\t\t\t}")
+	switch kind {
+	case protoreflect.StringKind:
+		g.P("\t\t\t", name, " = ", stringsPkg.Ident("Clone"), "(v)")
+	case protoreflect.BytesKind:
+		g.P("\t\t\t", name, " = append(([]byte)(nil), v...)") // Clone bytes
+	default:
+		g.P("\t\t\t", name, " = v")
+	}
+}
+
+func getReadMethod(kind protoreflect.Kind) string {
+	switch kind {
+	case protoreflect.BoolKind:
+		return "Bool"
+	case protoreflect.Int32Kind:
+		return "Int32"
+	case protoreflect.Int64Kind:
+		return "Int64"
+	case protoreflect.Uint32Kind:
+		return "Uint32"
+	case protoreflect.Uint64Kind:
+		return "Uint64"
+	case protoreflect.Sint32Kind:
+		return "Sint32"
+	case protoreflect.Sint64Kind:
+		return "Sint64"
+	case protoreflect.Fixed32Kind:
+		return "Fixed32"
+	case protoreflect.Fixed64Kind:
+		return "Fixed64"
+	case protoreflect.Sfixed32Kind:
+		return "Sfixed32"
+	case protoreflect.Sfixed64Kind:
+		return "Sfixed64"
+	case protoreflect.FloatKind:
+		return "Float"
+	case protoreflect.DoubleKind:
+		return "Double"
+	case protoreflect.StringKind:
+		return "String"
+	case protoreflect.BytesKind:
+		return "Bytes"
+	case protoreflect.EnumKind:
+		return "Enum"
+	}
+	return ""
+}
+
+func getUnpackMethod(kind protoreflect.Kind) string {
+	switch kind {
+	case protoreflect.BoolKind:
+		return "UnpackBools"
+	case protoreflect.Int32Kind:
+		return "UnpackInt32s"
+	case protoreflect.Int64Kind:
+		return "UnpackInt64s"
+	case protoreflect.Uint32Kind:
+		return "UnpackUint32s"
+	case protoreflect.Uint64Kind:
+		return "UnpackUint64s"
+	case protoreflect.Sint32Kind:
+		return "UnpackSint32s"
+	case protoreflect.Sint64Kind:
+		return "UnpackSint64s"
+	case protoreflect.Fixed32Kind:
+		return "UnpackFixed32s"
+	case protoreflect.Fixed64Kind:
+		return "UnpackFixed64s"
+	case protoreflect.Sfixed32Kind:
+		return "UnpackSfixed32s"
+	case protoreflect.Sfixed64Kind:
+		return "UnpackSfixed64s"
+	case protoreflect.FloatKind:
+		return "UnpackFloats"
+	case protoreflect.DoubleKind:
+		return "UnpackDoubles"
+	// Enums are not directly unpackable, but they are encoded as ints, so use UnpackInt32s
+	case protoreflect.EnumKind:
+		return "UnpackInt32s"
+	}
+	return ""
 }
