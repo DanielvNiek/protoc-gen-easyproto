@@ -141,14 +141,15 @@ func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
 	g.P("// This function doesn't allocate memory on repeated calls.")
 	g.P("func (m *", structName, ") MarshalProtobuf(dst []byte) []byte {")
 	g.P("\tmp := MP.Get()")
-	g.P("\tm.marshalProtobuf(mp.MessageMarshaler())")
+	g.P("\tm.MarshalProtoMessage(mp.MessageMarshaler())")
 	g.P("\tdst = mp.Marshal(dst)")
 	g.P("\tMP.Put(mp)")
 	g.P("\treturn dst")
 	g.P("}")
 	g.P()
 
-	g.P("func (m *", structName, ") marshalProtobuf(mm *", easyprotoPkg.Ident("MessageMarshaler"), ") {")
+	g.P("// MarshalProtoMessage marshals itself into the given marshaler.")
+	g.P("func (m *", structName, ") MarshalProtoMessage(mm *", easyprotoPkg.Ident("MessageMarshaler"), ") {")
 	for _, field := range msg.Fields {
 		generateMarshalField(g, field)
 	}
